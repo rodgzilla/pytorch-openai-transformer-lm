@@ -68,6 +68,21 @@ def try_on_a_sentence(model, lm_head, text_encoder, sentence, n_ctx):
 
     return new_word
 
+def transform_dataset(dataset, encoder, max_len, n_vocab, n_special, n_ctx):
+    n_batch   = len(dataset)
+    xmb       = np.zeros((n_batch, n_ctx, 2), dtype = np.int32)
+    mmb       = np.zeros((n_batch, n_ctx), dtype = np.float32)
+    start     = encoder.encoder['_start_']
+    clf_token = encoder.encoder['_classify_']
+    for i, x in enumerate(X):
+        x_with_tokens   = [start] + x[:max_len] + [clf_token]
+        l_x             = len(x_with_tokens)
+        xmb[i, :l_x, 0] = x_with_tokens
+        mmb[i, :l_x]    = 1
+    xmb[:, :, 1] = np.arange(n_vocab + n_special, n_vocab + n_special + n_ctx)
+
+    return xmb, mmb
+
 def encode_sentence(encoder, sentence, n_ctx):
     result                 = encoder.encode([sentence])
     n_vocab                = len(encoder.encoder)
