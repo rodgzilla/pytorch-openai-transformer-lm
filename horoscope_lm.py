@@ -5,14 +5,17 @@ import itertools
 
 import numpy as np
 
+from sklearn.model_selection import train_test_split
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 from model_pytorch import TransformerModel, LMHead, load_openai_pretrained_model, DEFAULT_CONFIG
+from model_pytorch import LanguageModel
 from utils import encode_dataset, flatten, iter_data, ResultLogger, make_path
 from text_utils import TextEncoder
-from datasets import rocstories
+from opt import OpenAIAdam
 
 def _chunk_word_list(word_list, max_sequence_len = 50000):
     # We have to split the text into text of 100.000 characters
@@ -35,22 +38,31 @@ def _chunk_word_list(word_list, max_sequence_len = 50000):
 
     return word_sequences
 
-def load_dataset(text_encoder, path = 'data/horoscope_dataset.csv',
-                 window_size = 150, shuffle = True, seed = 42):
+# TODO: Add the shuffle code
+def load_dataset(text_encoder, window_size, path = 'data/horoscope_dataset.csv',
+                 shuffle = True, seed = 142857,
+                 test_size = 0.8):
     df             = pd.read_csv(path)
     all_text       = ' '.join(df.TEXT)
     word_list      = all_text.split(' ')
     word_sequences = _chunk_word_list(word_list, )
     encoded_text   = text_encoder.encode(word_sequences)
     word_idx_list  = list(itertools.chain.from_iterable(encoded_text))
-    dataset        = []
+    context_list   = []
+    target_list    = []
 
     for start_idx in range(len(word_idx_list) - window_size - 1):
-        context = word_idx_list[start_idx : start_idx + window_size]
-        target  = word_idx_list[start_idx + window_size]
-        dataset.append((context, target))
+        context_list.append(word_idx_list[start_idx : start_idx + window_size])
+        target_list.append(word_idx_list[start_idx + window_size])
 
-    return dataset
+    X_train, X_val, y_train, y_val = train_test_split(
+        context_list,
+        target_list,
+        test_size    = test_size,
+        shuffle      = shuffle,
+        random_state = seed
+    )
+    return (X_train, y_train), (X_val, y_val)
 
 def try_on_a_sentence(model, lm_head, text_encoder, sentence, n_ctx):
     # pdb.set_trace()
@@ -74,7 +86,7 @@ def transform_dataset(dataset, encoder, max_len, n_vocab, n_special, n_ctx):
     mmb       = np.zeros((n_batch, n_ctx), dtype = np.float32)
     start     = encoder.encoder['_start_']
     clf_token = encoder.encoder['_classify_']
-    for i, x in enumerate(X):
+    for i, x in enumerate(dataset):
         x_with_tokens   = [start] + x[:max_len] + [clf_token]
         l_x             = len(x_with_tokens)
         xmb[i, :l_x, 0] = x_with_tokens
@@ -127,7 +139,65 @@ def main(sentence, max_size):
 
     return model
 
-bpe_path     = 'model/vocab_40000.bpe'
-encoder_path = 'model/encoder_bpe_40000.json'
-text_encoder = TextEncoder(encoder_path, bpe_path)
-dataset      = load_dataset(text_encoder)
+epochs                             = 3
+n_batch_train                      = 16
+args                               = DEFAULT_CONFIG
+window_size                        = 80
+max_len                            = window_size
+bpe_path                           = 'model/vocab_40000.bpe'
+encoder_path                       = 'model/encoder_bpe_40000.json'
+text_encoder                       = TextEncoder(encoder_path, bpe_path)
+encoder                            = text_encoder.encoder
+n_vocab                            = len(encoder)
+encoder['_start_']                 = len(encoder)
+encoder['_classify_']              = len(encoder)
+clf_token                          = encoder['_classify_']
+n_special                          = 2
+n_ctx                              = window_size + n_special
+total_vocab_size                   = n_vocab + n_special + n_ctx
+(X_train, y_train), (X_val, y_val) = load_dataset(
+    text_encoder,
+    window_size = window_size,
+    path        = 'data/small_horoscope_dataset.csv'
+)
+n_train                     = len(y_train)
+n_updates_total             = (n_train // n_batch_train) * epochs
+X_train_trans, X_train_mask = transform_dataset(
+    X_train,
+    text_encoder,
+    window_size,
+    n_vocab,
+    n_special,
+    n_ctx
+)
+X_val_trans, X_val_mask = transform_dataset(
+    X_val,
+    text_encoder,
+    window_size,
+    n_vocab,
+    n_special,
+    n_ctx
+)
+language_model = LanguageModel(
+    args,
+    vocab = total_vocab_size,
+    n_ctx = n_ctx
+)
+load_openai_pretrained_model(
+    model.transformer,
+    n_ctx = n_ctx,
+    n_special = n_special
+)
+model_opt = OpenAIAdam(
+    params = language_model.parameters(),
+    lr            = 6.25e-5,
+    schedule      = 'warmup_linear',
+    warmup        = 0.002,
+    t_total       = n_updates_total,
+    b1            = 0.9,
+    b2            = 0.999,
+    e             = 1e-8,
+    l2            = 0.01,
+    vector_l2     = 'store_true',
+    max_grad_norm = 1
+)
