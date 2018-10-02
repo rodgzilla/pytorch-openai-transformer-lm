@@ -298,6 +298,18 @@ class DoubleHeadModel(nn.Module):
 
         return lm_logits, task_logits
 
+class LanguageModel(nn.Module):
+    """ Transformer with language model """
+    def __init__(self, cfg, vocab=40990, n_ctx=512):
+        super(LanguageModel, self).__init__()
+        self.transformer = TransformerModel(cfg, vocab=vocab, n_ctx=n_ctx)
+        self.lm_head = LMHead(self.transformer, cfg)
+
+    def forward(self, x):
+        h = self.transformer(x)
+        lm_logits = self.lm_head(h)
+
+        return lm_logits
 
 def load_openai_pretrained_model(model, n_ctx=-1, n_special=-1, n_transfer=12, n_embd=768, path='./model/',
                                  path_names='./'):
