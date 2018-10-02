@@ -16,6 +16,7 @@ from model_pytorch import LanguageModel
 from utils import encode_dataset, flatten, iter_data, ResultLogger, make_path
 from text_utils import TextEncoder
 from opt import OpenAIAdam
+from loss import LanguageModelingLossCompute
 
 def _chunk_word_list(word_list, max_sequence_len = 50000):
     # We have to split the text into text of 100.000 characters
@@ -38,7 +39,6 @@ def _chunk_word_list(word_list, max_sequence_len = 50000):
 
     return word_sequences
 
-# TODO: Add the shuffle code
 def load_dataset(text_encoder, window_size, path = 'data/horoscope_dataset.csv',
                  shuffle = True, seed = 142857,
                  test_size = 0.8):
@@ -64,22 +64,6 @@ def load_dataset(text_encoder, window_size, path = 'data/horoscope_dataset.csv',
     )
     return (X_train, y_train), (X_val, y_val)
 
-def try_on_a_sentence(model, lm_head, text_encoder, sentence, n_ctx):
-    # pdb.set_trace()
-    n_vocab            = len(text_encoder.encoder)
-    # X, mmb           = encode_sentence(text_encoder, sentence, n_ctx)
-    X, _, input_length = encode_sentence(text_encoder, sentence, n_ctx)
-    X_tensor           = torch.tensor(X, dtype = torch.long)
-    # mmb_tensor       = torch.tensor(mmb)
-    transformer_output = model(X_tensor)
-    lm_output          = lm_head(transformer_output)
-    lm_output          = lm_output[:, :n_vocab]
-    new_word_idx       = lm_output[input_length - 2].max(dim = 0)[1].item()
-    # new_word           = text_encoder.decoder[lm_output.max(dim = 1)[1][-1].item()][:-4]
-    new_word           = text_encoder.decoder[new_word_idx][:-4]
-
-    return new_word
-
 def transform_dataset(dataset, encoder, max_len, n_vocab, n_special, n_ctx):
     n_batch   = len(dataset)
     xmb       = np.zeros((n_batch, n_ctx, 2), dtype = np.int32)
@@ -95,20 +79,108 @@ def transform_dataset(dataset, encoder, max_len, n_vocab, n_special, n_ctx):
 
     return xmb, mmb
 
-def encode_sentence(encoder, sentence, n_ctx):
-    result                 = encoder.encode([sentence])
-    n_vocab                = len(encoder.encoder)
-    X                      = np.zeros((1, n_ctx, 2), dtype = np.int32)
-    mmb                    = np.zeros((1, n_ctx), dtype = np.float32)
-    start                  = encoder.encoder['_start_']
-    clf_token              = encoder.encoder['_classify_']
-    encoded_input          = [start] + result[0] + [clf_token]
-    input_length           = len(encoded_input)
-    X[0, :input_length, 0] = [start] + result[0] + [clf_token]
-    X[0, :, 1]             = np.arange(n_vocab, n_vocab + n_ctx)
-    mmb[0, :input_length]  = 1
+def iter_apply(model, n_batch_train, device, compute_loss_fct, Xs, Ms, Ys):
+    # fns = [lambda x: np.concatenate(x, 0), lambda x: float(np.sum(x))]
+    logits = []
+    cost = 0
+    with torch.no_grad():
+        model.eval()
+        for xmb, mmb, ymb in iter_data(Xs, Ms, Ys, n_batch=n_batch_train, truncate=False, verbose=True):
+            n = len(xmb)
+            XMB = torch.tensor(xmb, dtype=torch.long).to(device)
+            YMB = torch.tensor(ymb, dtype=torch.long).to(device)
+            MMB = torch.tensor(mmb).to(device)
+            _, clf_logits = model(XMB)
+            lm_logits = model(XMB)
+            lm_logits *= n
+            lm_losses = compute_loss_fct(XMB, YMB, MMB, lm_logits, only_return_losses=True)
+            lm_losses *= n
+            logits.append(clf_logits.to("cpu").numpy())
+            cost += lm_losses.sum().item()
+        logits = np.concatenate(logits, 0)
+    return logits, cost
 
-    return X, mmb, input_length
+def run_epoch(model, n_batch_train, device, compute_loss_fct, logger,
+              save_dir, desc, submit, n_valid, n_epochs, X_train,
+              X_train_mask, y_train, X_val, X_val_mask, y_val):
+    for xmb, mmb, ymb in iter_data(X_train,
+                                   X_train_mask,
+                                   y_train,
+                                   n_batch = n_batch_train,
+                                   truncate=True,
+                                   verbose=True):
+        global n_updates
+        model.train()
+        XMB                    = torch.tensor(xmb, dtype=torch.long).to(device)
+        YMB                    = torch.tensor(ymb, dtype=torch.long).to(device)
+        MMB                    = torch.tensor(mmb).to(device)
+        lm_logits, clf_logits  = model(XMB)
+        compute_loss_fct(XMB, YMB, MMB, clf_logits, lm_logits)
+        n_updates             += 1
+        if n_updates != 0 and n_updates % 250 == 0:
+            log(
+                model,
+                n_batch_train,
+                device,
+                compute_loss_fct,
+                logger,
+                save_dir,
+                desc,
+
+                submit,
+                n_valid,
+                n_epochs,
+                n_updates,
+                X_train,
+                X_train_mask,
+                y_train,
+                X_val,
+                X_val_mask,
+                y_val
+            )
+
+def log(model, n_batch_train, device, compute_loss_fct, logger,
+        save_dir, desc, submit, n_valid, n_epochs, n_updates, X_train,
+        X_train_mask, y_train, X_val, X_val_mask, y_val):
+    global best_score
+    print("\nLogging")
+    tr_logits, tr_cost = iter_apply(
+        model,
+        n_batch_train,
+        device,
+        compute_loss_fct,
+        X_train[:n_valid],
+        X_train_mask[:n_valid],
+        y_train[:n_valid]
+    )
+    va_logits, va_cost = iter_apply(
+        model,
+        n_batch_train,
+        device,
+        compute_loss_fct,
+        X_val,
+        X_val_mask,
+        y_val
+    )
+    tr_cost = tr_cost / len(y_train[:n_valid])
+    va_cost = va_cost / n_valid
+    tr_acc  = accuracy_score(y_train[:n_valid], np.argmax(tr_logits, 1)) * 100.
+    va_acc  = accuracy_score(y_val, np.argmax(va_logits, 1)) * 100.
+    logger.log(
+        n_epochs  = n_epochs,
+        n_updates = n_updates,
+        tr_cost   = tr_cost,
+        va_cost   = va_cost,
+        tr_acc    = tr_acc,
+        va_acc    = va_acc
+    )
+    print('%d %d %.3f %.3f %.2f %.2f' % (n_epochs, n_updates, tr_cost, va_cost, tr_acc, va_acc))
+    if submit:
+        score = va_acc
+        if score > best_score:
+            best_score = score
+            path = os.path.join(save_dir, desc, 'best_params')
+            torch.save(model.state_dict(), make_path(path))
 
 def main(sentence, max_size):
     encoder_path           = 'model/encoder_bpe_40000.json'
@@ -139,11 +211,25 @@ def main(sentence, max_size):
 
     return model
 
+# Training configuration
 epochs                             = 3
 n_batch_train                      = 16
-args                               = DEFAULT_CONFIG
 window_size                        = 80
 max_len                            = window_size
+# General configuration
+save_dir                           = 'save/'
+log_dir                            = 'log/'
+desc                               = 'horoscope_language_model'
+submit                             = True
+args                               = DEFAULT_CONFIG
+logger                             = ResultLogger(
+    path = os.path.join(
+        log_dir,
+        '{}.jsonl'.format(desc)
+    ),
+    **args.__dict__
+)
+device                             = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 bpe_path                           = 'model/vocab_40000.bpe'
 encoder_path                       = 'model/encoder_bpe_40000.json'
 text_encoder                       = TextEncoder(encoder_path, bpe_path)
@@ -161,6 +247,7 @@ total_vocab_size                   = n_vocab + n_special + n_ctx
     path        = 'data/small_horoscope_dataset.csv'
 )
 n_train                     = len(y_train)
+n_valid                     = len(y_val) // 10
 n_updates_total             = (n_train // n_batch_train) * epochs
 X_train_trans, X_train_mask = transform_dataset(
     X_train,
@@ -184,12 +271,13 @@ language_model = LanguageModel(
     n_ctx = n_ctx
 )
 load_openai_pretrained_model(
-    model.transformer,
+    language_model.transformer,
     n_ctx = n_ctx,
     n_special = n_special
 )
+language_model.to(device)
 model_opt = OpenAIAdam(
-    params = language_model.parameters(),
+    params        = language_model.parameters(),
     lr            = 6.25e-5,
     schedule      = 'warmup_linear',
     warmup        = 0.002,
@@ -201,3 +289,28 @@ model_opt = OpenAIAdam(
     vector_l2     = 'store_true',
     max_grad_norm = 1
 )
+criterion        = nn.CrossEntropyLoss(reduce = False)
+compute_loss_fct = LanguageModelingLossCompute(
+    lm_criterion = criterion,
+    opt = model_opt
+)
+
+for epoch in range(epochs):
+    run_epoch(
+        model            = language_model,
+        n_batch_train    = n_batch_train,
+        device           = device,
+        compute_loss_fct = compute_loss_fct,
+        logger           = logger,
+        save_dir         = save_dir,
+        desc             = desc,
+        submit           = submit,
+        n_valid          = n_valid,
+        n_epochs         = epoch,
+        X_train          = X_train,
+        X_train_mask     = X_train_mask,
+        y_train          = y_train,
+        X_val            = X_val_trans,
+        X_val_mask       = X_val_mask,
+        y_val            = y_val
+    )
