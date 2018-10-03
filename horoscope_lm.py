@@ -126,7 +126,7 @@ def run_epoch(model, n_batch_train, device, compute_loss_fct, logger,
         lm_logits  = model(XMB)
         compute_loss_fct(XMB, YMB, MMB, lm_logits)
         n_updates += 1
-        if n_updates != 0 and n_updates % 10 == 0:
+        if n_updates != 0 and n_updates % 250 == 0:
             log(
                 model,
                 n_batch_train,
@@ -190,8 +190,8 @@ def log(model, n_batch_train, device, compute_loss_fct, logger,
 
 # Training configuration
 epochs                             = 3
-n_batch_train                      = 2
-window_size                        = 89
+n_batch_train                      = 20
+window_size                        = 30
 max_len                            = window_size
 # General configuration
 save_dir                           = 'save/'
@@ -221,7 +221,7 @@ total_vocab_size                   = n_vocab + n_special + n_ctx
 (X_train, y_train), (X_val, y_val) = load_dataset(
     text_encoder,
     window_size = window_size,
-    path        = 'data/tiny_horoscope_dataset.csv'
+    path        = 'data/small_horoscope_dataset.csv'
 )
 n_train                     = len(y_train)
 n_valid                     = len(y_val) // 10
