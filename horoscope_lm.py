@@ -1,3 +1,4 @@
+import os
 import pandas as pd
 import pdb
 import argparse
@@ -5,6 +6,7 @@ import itertools
 
 import numpy as np
 
+from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
 
 import torch
@@ -17,6 +19,9 @@ from utils import encode_dataset, flatten, iter_data, ResultLogger, make_path
 from text_utils import TextEncoder
 from opt import OpenAIAdam
 from loss import LanguageModelingLossCompute
+
+n_updates  = 0
+best_score = 0
 
 def _chunk_word_list(word_list, max_sequence_len = 50000):
     # We have to split the text into text of 100.000 characters
@@ -79,9 +84,9 @@ def transform_dataset(dataset, encoder, max_len, n_vocab, n_special, n_ctx):
 
     return xmb, mmb
 
-def iter_apply(model, n_batch_train, device, compute_loss_fct, Xs, Ms, Ys):
-    # fns = [lambda x: np.concatenate(x, 0), lambda x: float(np.sum(x))]
-    logits = []
+def iter_apply(model, n_batch_train, device, compute_loss_fct, Xs, Ms, Ys, return_logits = True):
+    if return_logits:
+        logits = []
     cost = 0
     with torch.no_grad():
         model.eval()
@@ -90,15 +95,19 @@ def iter_apply(model, n_batch_train, device, compute_loss_fct, Xs, Ms, Ys):
             XMB = torch.tensor(xmb, dtype=torch.long).to(device)
             YMB = torch.tensor(ymb, dtype=torch.long).to(device)
             MMB = torch.tensor(mmb).to(device)
-            _, clf_logits = model(XMB)
             lm_logits = model(XMB)
             lm_logits *= n
             lm_losses = compute_loss_fct(XMB, YMB, MMB, lm_logits, only_return_losses=True)
             lm_losses *= n
-            logits.append(clf_logits.to("cpu").numpy())
+            if return_logits:
+                logits.append(lm_logits.to("cpu").numpy())
             cost += lm_losses.sum().item()
+
+    if return_logits:
         logits = np.concatenate(logits, 0)
-    return logits, cost
+        return logits, cost
+
+    return cost
 
 def run_epoch(model, n_batch_train, device, compute_loss_fct, logger,
               save_dir, desc, submit, n_valid, n_epochs, X_train,
@@ -111,13 +120,13 @@ def run_epoch(model, n_batch_train, device, compute_loss_fct, logger,
                                    verbose=True):
         global n_updates
         model.train()
-        XMB                    = torch.tensor(xmb, dtype=torch.long).to(device)
-        YMB                    = torch.tensor(ymb, dtype=torch.long).to(device)
-        MMB                    = torch.tensor(mmb).to(device)
-        lm_logits, clf_logits  = model(XMB)
-        compute_loss_fct(XMB, YMB, MMB, clf_logits, lm_logits)
-        n_updates             += 1
-        if n_updates != 0 and n_updates % 250 == 0:
+        XMB        = torch.tensor(xmb, dtype=torch.long).to(device)
+        YMB        = torch.tensor(ymb, dtype=torch.long).to(device)
+        MMB        = torch.tensor(mmb).to(device)
+        lm_logits  = model(XMB)
+        compute_loss_fct(XMB, YMB, MMB, lm_logits)
+        n_updates += 1
+        if n_updates != 0 and n_updates % 10 == 0:
             log(
                 model,
                 n_batch_train,
@@ -126,7 +135,6 @@ def run_epoch(model, n_batch_train, device, compute_loss_fct, logger,
                 logger,
                 save_dir,
                 desc,
-
                 submit,
                 n_valid,
                 n_epochs,
@@ -144,77 +152,46 @@ def log(model, n_batch_train, device, compute_loss_fct, logger,
         X_train_mask, y_train, X_val, X_val_mask, y_val):
     global best_score
     print("\nLogging")
-    tr_logits, tr_cost = iter_apply(
+    tr_cost = iter_apply(
         model,
         n_batch_train,
         device,
         compute_loss_fct,
         X_train[:n_valid],
         X_train_mask[:n_valid],
-        y_train[:n_valid]
+        y_train[:n_valid],
+        False
     )
-    va_logits, va_cost = iter_apply(
+    va_cost = iter_apply(
         model,
         n_batch_train,
         device,
         compute_loss_fct,
         X_val,
         X_val_mask,
-        y_val
+        y_val,
+        False
     )
     tr_cost = tr_cost / len(y_train[:n_valid])
     va_cost = va_cost / n_valid
-    tr_acc  = accuracy_score(y_train[:n_valid], np.argmax(tr_logits, 1)) * 100.
-    va_acc  = accuracy_score(y_val, np.argmax(va_logits, 1)) * 100.
     logger.log(
         n_epochs  = n_epochs,
         n_updates = n_updates,
         tr_cost   = tr_cost,
-        va_cost   = va_cost,
-        tr_acc    = tr_acc,
-        va_acc    = va_acc
+        va_cost   = va_cost
     )
-    print('%d %d %.3f %.3f %.2f %.2f' % (n_epochs, n_updates, tr_cost, va_cost, tr_acc, va_acc))
+    print('\n%d %d %.3f %.3f' % (n_epochs, n_updates, tr_cost, va_cost))
     if submit:
-        score = va_acc
+        score = va_cost
         if score > best_score:
             best_score = score
             path = os.path.join(save_dir, desc, 'best_params')
             torch.save(model.state_dict(), make_path(path))
 
-def main(sentence, max_size):
-    encoder_path           = 'model/encoder_bpe_40000.json'
-    bpe_path               = 'model/vocab_40000.bpe'
-    text_encoder           = TextEncoder(encoder_path, bpe_path)
-    encoder                = text_encoder.encoder
-    n_vocab                = len(text_encoder.encoder)
-    encoder['_start_']     = len(encoder)
-    encoder['_delimiter_'] = len(encoder)
-    encoder['_classify_']  = len(encoder)
-    n_special              = 3
-    n_ctx                  = 100
-    vocab                  = n_vocab + n_special + n_ctx
-    args                   = DEFAULT_CONFIG
-    device                 = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    model                  = TransformerModel(args, vocab = vocab, n_ctx = n_ctx)
-    load_openai_pretrained_model(model, n_ctx = n_ctx, n_special = n_special)
-    lm_head                = LMHead(model, args)
-    # model.eval()
-    # lm_head.eval()
-    # for _ in range(max_size):
-    #     # X, mmb   = encode_sentence(text_encoder, sentence, n_ctx)
-    #     # model    = Model(args, vocab = vocab, n_ctx = n_ctx)
-    #     # load_openai_pretrained_model(model, n_ctx = n_ctx, n_special = n_special)
-    #     new_word = try_on_a_sentence(model, lm_head, text_encoder, sentence, n_ctx)
-    #     sentence = f'{sentence} {new_word}'
-    #     print('\n', sentence)
-
-    return model
-
 # Training configuration
 epochs                             = 3
-n_batch_train                      = 16
-window_size                        = 80
+n_batch_train                      = 2
+window_size                        = 89
 max_len                            = window_size
 # General configuration
 save_dir                           = 'save/'
@@ -244,7 +221,7 @@ total_vocab_size                   = n_vocab + n_special + n_ctx
 (X_train, y_train), (X_val, y_val) = load_dataset(
     text_encoder,
     window_size = window_size,
-    path        = 'data/small_horoscope_dataset.csv'
+    path        = 'data/tiny_horoscope_dataset.csv'
 )
 n_train                     = len(y_train)
 n_valid                     = len(y_val) // 10
@@ -307,7 +284,7 @@ for epoch in range(epochs):
         submit           = submit,
         n_valid          = n_valid,
         n_epochs         = epoch,
-        X_train          = X_train,
+        X_train          = X_train_trans,
         X_train_mask     = X_train_mask,
         y_train          = y_train,
         X_val            = X_val_trans,
