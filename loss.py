@@ -67,7 +67,7 @@ class ClassificationLossCompute:
         return train_loss.item()
 
 class LanguageModelingLossCompute:
-    " A Loss compute and train function for language modelling tasks."
+    " A Loss compute and train function for language modeling tasks."
     def __init__(self, lm_criterion, opt=None):
         self.lm_criterion  = lm_criterion
         self.opt           = opt
