@@ -126,11 +126,13 @@ def try_on_a_sentence(model, text_encoder, sentence, window_size,
                       n_vocab, n_special, n_ctx, device,
                       final_len = 200):
     model.eval()
-    start_token = text_encoder.encoder['_start_']
-    clf_token = text_encoder.encoder['_classify_']
+    start_token  = text_encoder.encoder['_start_']
+    clf_token    = text_encoder.encoder['_classify_']
     encoded_text = text_encoder.encode([sentence])[0]
     while len(encoded_text) < final_len:
-        context = encoded_text[-window_size:]
+        # We take the last 'window_size' words of the text being generated
+        # and run it through the model.
+        context         = encoded_text[-window_size:]
         X_trans, X_mask = transform_dataset(
             [context],
             text_encoder,
@@ -141,21 +143,24 @@ def try_on_a_sentence(model, text_encoder, sentence, window_size,
         )
         XMB                = torch.tensor(X_trans, dtype = torch.long).to(device)
         lm_logits          = model(XMB)
+        # We truncate the resulting predictions to actual vocabulary
+        # words in order to exclude special tokens and positional
+        # embeddings.
+        lm_logits          = lm_logits[:, : n_vocab]
         X_trans_tensor     = torch.from_numpy(X_trans)
-        clf_token_bool_idx = X_trans_tensor[0, :, 0] == text_encoder.encoder['_classify_']
+        # We then select the logit corresponding to the 'clf_token'
+        # position (last one of the sequence).
+        clf_token_bool_idx = X_trans_tensor[0, :, 0] == clf_token
         predictions        = lm_logits.max(dim = 1)[1]
         pred               = predictions[clf_token_bool_idx[1:]].item()
-        # pred               = predictions[bool_idx[:-1]].item()
         encoded_text.append(pred)
 
-    print(decode_sentence(text_encoder, encoded_text))
-
-    return lm_logits
-
+    return decode_sentence(text_encoder, encoded_text)
 
 def run_epoch(model, n_batch_train, device, compute_loss_fct, logger,
               save_dir, desc, submit, n_valid, n_epochs, X_train,
-              X_train_mask, y_train, X_val, X_val_mask, y_val):
+              X_train_mask, y_train, X_val, X_val_mask, y_val,
+              generation_params):
     for xmb, mmb, ymb in iter_data(X_train,
                                    X_train_mask,
                                    y_train,
@@ -169,8 +174,7 @@ def run_epoch(model, n_batch_train, device, compute_loss_fct, logger,
         MMB        = torch.tensor(mmb).to(device)
         lm_logits  = model(XMB)
         compute_loss_fct(XMB, YMB, MMB, lm_logits)
-        n_updates += 1
-        if n_updates != 0 and n_updates % 250 == 0:
+        if n_updates % 250 == 0:
             log(
                 model,
                 n_batch_train,
@@ -188,13 +192,18 @@ def run_epoch(model, n_batch_train, device, compute_loss_fct, logger,
                 y_train,
                 X_val,
                 X_val_mask,
-                y_val
+                y_val,
+                generation_params
             )
+        n_updates += 1
 
 def log(model, n_batch_train, device, compute_loss_fct, logger,
         save_dir, desc, submit, n_valid, n_epochs, n_updates, X_train,
-        X_train_mask, y_train, X_val, X_val_mask, y_val):
+        X_train_mask, y_train, X_val, X_val_mask, y_val,
+        generation_params):
     global best_score
+    result = try_on_a_sentence(**generation_params)
+    print(f"\n\n Base: {generation_params['sentence']} \n\n Result: {result}")
     print("\nLogging")
     tr_cost = iter_apply(
         model,
@@ -235,7 +244,7 @@ def log(model, n_batch_train, device, compute_loss_fct, logger,
 # Training configuration
 epochs                             = 3
 n_batch_train                      = 20
-window_size                        = 30
+window_size                        = 80
 max_len                            = window_size
 # General configuration
 save_dir                           = 'save/'
@@ -316,22 +325,35 @@ compute_loss_fct = LanguageModelingLossCompute(
     opt = model_opt
 )
 
-# for epoch in range(epochs):
-#     run_epoch(
-#         model            = language_model,
-#         n_batch_train    = n_batch_train,
-#         device           = device,
-#         compute_loss_fct = compute_loss_fct,
-#         logger           = logger,
-#         save_dir         = save_dir,
-#         desc             = desc,
-#         submit           = submit,
-#         n_valid          = n_valid,
-#         n_epochs         = epoch,
-#         X_train          = X_train_trans,
-#         X_train_mask     = X_train_mask,
-#         y_train          = y_train,
-#         X_val            = X_val_trans,
-#         X_val_mask       = X_val_mask,
-#         y_val            = y_val
-#     )
+generation_parameters = {
+    'model'        : language_model,
+    'text_encoder' : text_encoder,
+    'sentence'     : 'You had a great morning but your afternoon will be ruined because',
+    'window_size'  : window_size,
+    'n_vocab'      : n_vocab,
+    'n_special'    : n_special,
+    'n_ctx'        : n_ctx,
+    'device'       : device,
+    'final_len'    : 150
+}
+
+for epoch in range(epochs):
+    run_epoch(
+        model             = language_model,
+        n_batch_train     = n_batch_train,
+        device            = device,
+        compute_loss_fct  = compute_loss_fct,
+        logger            = logger,
+        save_dir          = save_dir,
+        desc              = desc,
+        submit            = submit,
+        n_valid           = n_valid,
+        n_epochs          = epoch,
+        X_train           = X_train_trans,
+        X_train_mask      = X_train_mask,
+        y_train           = y_train,
+        X_val             = X_val_trans,
+        X_val_mask        = X_val_mask,
+        y_val             = y_val,
+        generation_params = generation_parameters
+    )
