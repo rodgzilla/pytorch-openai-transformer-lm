@@ -109,6 +109,44 @@ def iter_apply(model, n_batch_train, device, compute_loss_fct, Xs, Ms, Ys, retur
 
     return cost
 
+def decode_word(text_encoder, idx):
+    if idx not in text_encoder.decoder:
+        return '<oov>'
+
+    word = text_encoder.decoder[idx]
+
+    return word[:-4] if word[-4:] == '</w>' else word
+
+def decode_sentence(text_encoder, idx_list):
+    word_list = [decode_word(text_encoder, idx) for idx in idx_list]
+
+    return ' '.join(word_list)
+
+def try_on_a_sentence(model, text_encoder, sentence, window_size,
+                      n_vocab, n_special, n_ctx, device,
+                      final_len = 200):
+    encoded_text = text_encoder.encode([sentence])[0]
+    print(encoded_text)
+    while len(encoded_text) < final_len:
+        context = encoded_text[-window_size:]
+        X_trans, X_mask = transform_dataset(
+            [context],
+            text_encoder,
+            window_size,
+            n_vocab,
+            n_special,
+            n_ctx
+        )
+        XMB = torch.tensor(X_trans, dtype = torch.long).to(device)
+        lm_logits = model(XMB)
+        prediction = lm_logits[-1].max(dim = 0)[1].item()
+        encoded_text.append(prediction)
+
+    print(decode_sentence(text_encoder, encoded_text))
+
+    return lm_logits
+
+
 def run_epoch(model, n_batch_train, device, compute_loss_fct, logger,
               save_dir, desc, submit, n_valid, n_epochs, X_train,
               X_train_mask, y_train, X_val, X_val_mask, y_val):
@@ -272,22 +310,22 @@ compute_loss_fct = LanguageModelingLossCompute(
     opt = model_opt
 )
 
-for epoch in range(epochs):
-    run_epoch(
-        model            = language_model,
-        n_batch_train    = n_batch_train,
-        device           = device,
-        compute_loss_fct = compute_loss_fct,
-        logger           = logger,
-        save_dir         = save_dir,
-        desc             = desc,
-        submit           = submit,
-        n_valid          = n_valid,
-        n_epochs         = epoch,
-        X_train          = X_train_trans,
-        X_train_mask     = X_train_mask,
-        y_train          = y_train,
-        X_val            = X_val_trans,
-        X_val_mask       = X_val_mask,
-        y_val            = y_val
-    )
+# for epoch in range(epochs):
+#     run_epoch(
+#         model            = language_model,
+#         n_batch_train    = n_batch_train,
+#         device           = device,
+#         compute_loss_fct = compute_loss_fct,
+#         logger           = logger,
+#         save_dir         = save_dir,
+#         desc             = desc,
+#         submit           = submit,
+#         n_valid          = n_valid,
+#         n_epochs         = epoch,
+#         X_train          = X_train_trans,
+#         X_train_mask     = X_train_mask,
+#         y_train          = y_train,
+#         X_val            = X_val_trans,
+#         X_val_mask       = X_val_mask,
+#         y_val            = y_val
+#     )
