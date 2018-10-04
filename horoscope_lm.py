@@ -125,8 +125,10 @@ def decode_sentence(text_encoder, idx_list):
 def try_on_a_sentence(model, text_encoder, sentence, window_size,
                       n_vocab, n_special, n_ctx, device,
                       final_len = 200):
+    model.eval()
+    start_token = text_encoder.encoder['_start_']
+    clf_token = text_encoder.encoder['_classify_']
     encoded_text = text_encoder.encode([sentence])[0]
-    print(encoded_text)
     while len(encoded_text) < final_len:
         context = encoded_text[-window_size:]
         X_trans, X_mask = transform_dataset(
@@ -137,10 +139,14 @@ def try_on_a_sentence(model, text_encoder, sentence, window_size,
             n_special,
             n_ctx
         )
-        XMB = torch.tensor(X_trans, dtype = torch.long).to(device)
-        lm_logits = model(XMB)
-        prediction = lm_logits[-1].max(dim = 0)[1].item()
-        encoded_text.append(prediction)
+        XMB                = torch.tensor(X_trans, dtype = torch.long).to(device)
+        lm_logits          = model(XMB)
+        X_trans_tensor     = torch.from_numpy(X_trans)
+        clf_token_bool_idx = X_trans_tensor[0, :, 0] == text_encoder.encoder['_classify_']
+        predictions        = lm_logits.max(dim = 1)[1]
+        pred               = predictions[clf_token_bool_idx[1:]].item()
+        # pred               = predictions[bool_idx[:-1]].item()
+        encoded_text.append(pred)
 
     print(decode_sentence(text_encoder, encoded_text))
 
