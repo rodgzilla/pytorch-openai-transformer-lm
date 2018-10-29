@@ -46,7 +46,7 @@ def _chunk_word_list(word_list, max_sequence_len = 50000):
 
 def load_dataset(text_encoder, window_size, path = 'data/horoscope_dataset.csv',
                  shuffle = True, seed = 142857,
-                 test_size = 0.8):
+                 test_size = 0.2):
     df             = pd.read_csv(path)
     all_text       = ' '.join(df.TEXT)
     word_list      = all_text.split(' ')
