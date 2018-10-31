@@ -1,18 +1,14 @@
-import argparse
 import os
-import random
 
 import pandas as pd
 import numpy as np
 from sklearn.metrics import accuracy_score
-from sklearn.utils import shuffle
 from sklearn.model_selection import train_test_split
 
 import torch
 import torch.nn as nn
 
 from model_pytorch import DoubleHeadModel, load_openai_pretrained_model, DEFAULT_CONFIG
-from model_pytorch import TransformerModel
 from opt import OpenAIAdam
 from text_utils import TextEncoder
 from utils import (encode_dataset, iter_data,
@@ -53,7 +49,6 @@ def transform_imdb(X, encoder, max_len, n_vocab, n_special, n_ctx):
     return xmb, mmb
 
 def iter_apply(dh_model, n_batch_train, device, compute_loss_fct, Xs, Ms, Ys):
-    # fns = [lambda x: np.concatenate(x, 0), lambda x: float(np.sum(x))]
     logits = []
     cost = 0
     with torch.no_grad():
@@ -72,7 +67,6 @@ def iter_apply(dh_model, n_batch_train, device, compute_loss_fct, Xs, Ms, Ys):
         logits = np.concatenate(logits, 0)
     return logits, cost
 
-# def run_epoch(dh_model, device, compute_loss_fct, n_batch_train, n_epochs, X, X_mask, y):
 def run_epoch(dh_model, n_batch_train, device, compute_loss_fct,
               logger, save_dir, desc, submit, n_valid, n_epochs,
               X_train, X_train_mask, y_train, X_val, X_val_mask,
@@ -137,17 +131,17 @@ def log(dh_model, n_batch_train, device, compute_loss_fct, logger,
     )
     tr_cost = tr_cost / len(y_train[:n_valid])
     va_cost = va_cost / n_valid
-    tr_acc = accuracy_score(y_train[:n_valid], np.argmax(tr_logits, 1)) * 100.
-    va_acc = accuracy_score(y_val, np.argmax(va_logits, 1)) * 100.
+    tr_acc  = accuracy_score(y_train[:n_valid], np.argmax(tr_logits, 1)) * 100.
+    va_acc  = accuracy_score(y_val, np.argmax(va_logits, 1)) * 100.
     logger.log(
-        n_epochs = n_epochs,
+        n_epochs  = n_epochs,
         n_updates = n_updates,
-        tr_cost = tr_cost,
-        va_cost = va_cost,
-        tr_acc = tr_acc,
-        va_acc = va_acc
+        tr_cost   = tr_cost,
+        va_cost   = va_cost,
+        tr_acc    = tr_acc,
+        va_acc    = va_acc
     )
-    print('%d %d %.3f %.3f %.2f %.2f' % (n_epochs, n_updates, tr_cost, va_cost, tr_acc, va_acc))
+    print('\n%d %d %.3f %.3f %.2f %.2f' % (n_epochs, n_updates, tr_cost, va_cost, tr_acc, va_acc))
     if submit:
         score = va_acc
         if score > best_score:
@@ -158,7 +152,6 @@ def log(dh_model, n_batch_train, device, compute_loss_fct, logger,
 
 def main(epochs = 2):
     device                = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    # device                = torch.device('cpu')
     args                  = DEFAULT_CONFIG
     encoder_path          = 'model/encoder_bpe_40000.json'
     bpe_path              = 'model/vocab_40000.bpe'
@@ -186,10 +179,7 @@ def main(epochs = 2):
     )
     n_batch_train               = 2
     n_train                     = len(y_train)
-    # n_valid                     = len(y_train) // 10
     n_valid                     = len(y_val) // 10
-    print(f'n_train {n_train}')
-    print(f'n_valid {n_valid}')
     n_updates_total             = (n_train // n_batch_train) * epochs
     n_vocab                     = len(encoder)
     encoder['_start_']          = len(encoder)
@@ -214,8 +204,6 @@ def main(epochs = 2):
         n_special,
         n_ctx
     )
-    print(f'train shape {X_train_trans.shape}')
-    print(f'valid shape {X_val_trans.shape}')
     dh_model                    = DoubleHeadModel(
         args,
         clf_token,
@@ -243,7 +231,11 @@ def main(epochs = 2):
         lm_coef       = 0.5,
         opt           = model_opt
     )
-    load_openai_pretrained_model(dh_model.transformer, n_ctx = n_ctx, n_special = n_special)
+    load_openai_pretrained_model(
+        model     = dh_model.transformer,
+        n_ctx     = n_ctx,
+        n_special = n_special
+    )
     dh_model.to(device)
     for epoch in range(epochs):
         run_epoch(
@@ -284,4 +276,5 @@ def main(epochs = 2):
             y_val
         )
 
-main(5)
+if __name__ == '__main__':
+    main(5)
