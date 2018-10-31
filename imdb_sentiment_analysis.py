@@ -33,7 +33,8 @@ def load_dataset(path, train_size = 0.8, shuffle = True, seed = 42):
 
     return (list(X_train), y_train.values), (list(X_val), y_val.values)
 
-def transform_imdb(X, encoder, max_len, n_vocab, n_special, n_ctx):
+def transform_imdb(X, encoder, max_len, n_vocab, n_special,
+                   n_ctx):
     n_batch   = len(X)
     xmb       = np.zeros((n_batch, n_ctx, 2), dtype = np.int32)
     mmb       = np.zeros((n_batch, n_ctx), dtype = np.float32)
@@ -44,7 +45,11 @@ def transform_imdb(X, encoder, max_len, n_vocab, n_special, n_ctx):
         l_x             = len(x_with_tokens)
         xmb[i, :l_x, 0] = x_with_tokens
         mmb[i, :l_x]    = 1
-    xmb[:, :, 1] = np.arange(n_vocab + n_special, n_vocab + n_special + n_ctx)
+    pos_emb_start = n_vocab + n_special
+    xmb[:, :, 1]  = np.arange(
+        pos_emb_start,
+        pos_emb_start + n_ctx
+    )
 
     return xmb, mmb
 
