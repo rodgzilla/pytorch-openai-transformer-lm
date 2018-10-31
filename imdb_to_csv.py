@@ -28,7 +28,6 @@ def get_comment_list(paths, desc):
     return comments
 
 def create_df_dataset(dataset):
-    n           = 30
     data_folder = 'data/aclImdb/'
     paths       = extract_paths(data_folder, dataset, 'neg')
     comments    = get_comment_list(paths, 'Training set')
